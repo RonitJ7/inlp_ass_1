@@ -1,27 +1,9 @@
 import json
-from utils import clean_corpus
-
-def parse_jsonl(path,text_field,encoding="utf-8",min_chars=8):
-    raw_lines = []
-    
-    with open(path, "r", encoding=encoding,errors = "replace") as f: #Here, errors replace means invalid byte sequences will be replaced with a replacement unicode character : �, otherwise it will just crash if it sees a weird character which we don't want
-        for line_no,line in enumerate(f,start = 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as e:
-                print(f"Warning: Skipping line {line_no} due to JSON decode error: {e}")
-                continue
-            
-            raw_lines.append(obj[text_field])
-
-    return clean_corpus(raw_lines,min_chars=min_chars)
+from utils import parse_jsonl
 
 def clean_and_split_dataset(path,text_field,train_ratio = 0.8,val_ratio = 0.1):
+
     lang_lines = parse_jsonl(path=path,text_field=text_field)
-    test_ratio = 1.0 - train_ratio - val_ratio
     total_lines = len(lang_lines)
     train_end = int(total_lines * train_ratio)
     val_end = train_end + int(total_lines * val_ratio)
@@ -29,6 +11,7 @@ def clean_and_split_dataset(path,text_field,train_ratio = 0.8,val_ratio = 0.1):
     lang_val = lang_lines[train_end:val_end]
     lang_test = lang_lines[val_end:]
     return lang_train, lang_val, lang_test
+
 
 if __name__ == "__main__":
     #Prepare datasets
