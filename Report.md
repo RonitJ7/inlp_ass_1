@@ -23,3 +23,11 @@ s = "".join(ch for ch in s if unicodedata.category(ch) not in {"Cc", "Cf"})
 
 Code:
 s = re.sub(r"\s+", " ", s).strip()
+
+## Task 1.2
+
+1. The whitespace tokenizer is pretty simple. We look through the line and idenfity if the character is a "word character", which means it checks if it belongs to Letters, Marks or Numbers unicode categories. If no, it is treated as a separate token (unless it is a space obviously).
+
+2. 
+
+3. 

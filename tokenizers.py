@@ -1,5 +1,5 @@
-import json
 from utils import parse_jsonl
+import unicodedata
 
 def clean_and_split_dataset(path,text_field,train_ratio = 0.8,val_ratio = 0.1):
 
@@ -12,6 +12,34 @@ def clean_and_split_dataset(path,text_field,train_ratio = 0.8,val_ratio = 0.1):
     lang_test = lang_lines[val_end:]
     return lang_train, lang_val, lang_test
 
+def _is_word_char(ch: str) -> bool:
+    # Letters (L*), Marks (M*), Numbers (N*)
+    return unicodedata.category(ch)[0] in {"L", "M", "N"}
+
+def whitespace_tokenizer(lines):
+
+    tokens = []
+    for line in lines:
+        buf = []
+        sent = []
+        for ch in line:
+            if ch.isspace():
+                if buf:
+                    sent.append("".join(buf))
+                    buf = []
+            elif _is_word_char(ch):
+                buf.append(ch)
+            else:
+                if buf:
+                    sent.append("".join(buf))
+                    buf = []
+                sent.append(ch)
+        if buf:
+            sent.append("".join(buf))
+        
+        tokens.append(sent)
+
+    return tokens
 
 if __name__ == "__main__":
     #Prepare datasets
