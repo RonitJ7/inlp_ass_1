@@ -10,6 +10,18 @@ _COMMON_INVISIBLES = {
     "\u00ad",  # soft hyphen
 }
 
+def load_tokenized_jsonl(path, field="tokens", max_lines=None):
+    lines = []
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for i, row in enumerate(f):
+            if max_lines is not None and i >= max_lines:
+                break
+            row = row.strip()
+            if not row:
+                continue
+            obj = json.loads(row)
+            lines.append(obj[field])
+    return lines
 
 def parse_jsonl(path,text_field,encoding="utf-8",min_chars=8):
     raw_lines = []
