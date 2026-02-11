@@ -1,5 +1,6 @@
 from utils import load_tokenized_jsonl
 from tqdm import tqdm 
+import math
 class LM:
     def __init__(self): 
         self.sequence_count4 = {}
@@ -10,6 +11,8 @@ class LM:
         self.nexttoken2 = {}
         self.nexttoken1 = {}
         self.delims = {'.', '?', '!'}# Split sentences by '.' , '?' and '.'
+        self.cache_kneser_key_prob = {}
+        self.cache_witten_bell_prob = {}
 
     def split(self, line):
         curr = []
@@ -73,6 +76,8 @@ class LM:
                 if sequence[i] not in self.nexttoken1[prev1]:
                     self.nexttoken1[prev1][sequence[i]] = 0
                 self.nexttoken1[prev1][sequence[i]] += 1    
+        
+        self.tot_tokens = sum(self.sequence_count1.values())
 
     def predict(self,context):
         sentences = self.split(context)
@@ -107,13 +112,217 @@ class LM:
             # Print the generated sentence excluding the starting <s> tokens
             print(" ".join(sentence[3:]))
 
+    def get_prob_no_smoothing(self, sentence):
+        log_prob = 0.0
+
+        for i in range(3, len(sentence)):
+            w = sentence[i]
+            prev3 = tuple(sentence[i-3:i])
+            prev2 = tuple(sentence[i-2:i])
+            prev1 = tuple(sentence[i-1:i])
+
+            prob = None
+
+            # 4-gram MLE from nexttoken3
+            dist3 = self.nexttoken3.get(prev3)
+            if dist3 and w in dist3:
+                prob = dist3[w] / sum(dist3.values())
+
+            else:
+                # backoff to trigram (context len 2)
+                dist2 = self.nexttoken2.get(prev2)
+                if dist2 and w in dist2:
+                    prob = dist2[w] / sum(dist2.values())
+                else:
+                    # backoff to bigram (context len 1)
+                    dist1 = self.nexttoken1.get(prev1)
+                    if dist1 and w in dist1:
+                        prob = dist1[w] / sum(dist1.values())
+                    else:
+                        # no smoothing => zero prob => perplexity infinite
+                        prob = 1e-12
+
+            log_prob += math.log(prob)
+
+        return log_prob
+    
+    def compute_counts_kneser_key(self):
+        self.total_bigram_types = sum(len(next_tokens) for next_tokens in self.nexttoken1.values())
+        self.left_context_count = {}
+        for prev,dic in self.nexttoken1.items():
+            for w in dic:
+                if w not in self.left_context_count:
+                    self.left_context_count[w] = 0
+                self.left_context_count[w] += 1
+           
+    
+    def kneser_key_prob(self, context, w, discount=0.75):
+        prob = 0.0
+        cached = self.cache_kneser_key_prob.get((context,w))
+        if  cached is not None:
+            return cached
+        if len(context) == 3:
+            if context not in self.nexttoken3:
+                return self.kneser_key_prob(context[1:], w, discount)
+            else:
+                numerator = max(self.nexttoken3[context].get(w, 0) - discount, 0)
+                denominator = sum(self.nexttoken3[context].values())
+                prob = numerator / denominator
+                t_h = len(self.nexttoken3[context])
+                beta = (discount * t_h) / denominator 
+                prob += beta*self.kneser_key_prob(context[1:], w, discount)
+
+        elif len(context) == 2:
+            if context not in self.nexttoken2:
+                return self.kneser_key_prob(context[1:], w, discount)
+            else:
+                numerator = max(self.nexttoken2[context].get(w, 0) - discount, 0)
+                denominator = sum(self.nexttoken2[context].values())
+                prob = numerator / denominator
+                t_h = len(self.nexttoken2[context])
+                beta = (discount * t_h) / denominator 
+                prob += beta*self.kneser_key_prob(context[1:], w, discount)
+        elif len(context) == 1:
+            if context not in self.nexttoken1:
+                return self.kneser_key_prob(context[1:], w, discount)
+            else:
+                numerator = max(self.nexttoken1[context].get(w, 0) - discount, 0)
+                denominator = sum(self.nexttoken1[context].values())
+                prob = numerator / denominator
+                t_h = len(self.nexttoken1[context])
+                beta = (discount * t_h) / denominator 
+                prob += beta*(self.left_context_count.get(w, 0) / self.total_bigram_types)
+
+        elif len(context) == 0:
+                prob = self.left_context_count.get(w, 0) / self.total_bigram_types
+
+        self.cache_kneser_key_prob[context,w] = prob
+        return prob
+    
+    def get_prob_kneser_key(self,sentence):
+        log_prob = 0.0
+        n_pred = 0
+        for i in range(3, len(sentence)):
+            context = tuple(sentence[i-3:i])
+            w = sentence[i]
+            prob = self.kneser_key_prob(context, w)
+            if(prob == 0):
+                prob = 1e-12
+            log_prob += math.log(prob)
+            n_pred += 1
+        return log_prob
+    
+    def witten_bell_counts(self,context,w):
+        prob = 0.0
+        cached = self.cache_witten_bell_prob.get((context,w))
+        if  cached is not None:
+            return cached
+        if len(context) == 3:
+            if context not in self.nexttoken3:
+                prob =  self.witten_bell_counts(context[1:], w)
+            else:
+                count_context = sum(self.nexttoken3[context].values())
+                if count_context == 0:
+                    return self.witten_bell_counts(context[1:], w)
+                T = len(self.nexttoken3[context])
+                lambda_ = count_context / (count_context + T)
+                p_continuation = self.witten_bell_counts(context[1:], w)
+                p_ml = self.nexttoken3[context].get(w, 0) / count_context
+                prob += lambda_ * p_ml + (1 - lambda_) * p_continuation
+        elif len(context) == 2:
+            if context not in self.nexttoken2:
+                prob = self.witten_bell_counts(context[1:], w)
+            else:
+                count_context = sum(self.nexttoken2[context].values())
+                if count_context == 0:
+                    return self.witten_bell_counts(context[1:], w)
+                T = len(self.nexttoken2[context])
+                lambda_ = count_context / (count_context + T)
+                p_continuation = self.witten_bell_counts(context[1:], w)
+                p_ml = self.nexttoken2[context].get(w, 0) / count_context
+                prob += lambda_ * p_ml + (1 - lambda_) * p_continuation
+        elif len(context) == 1:
+            if context not in self.nexttoken1:
+                prob =  self.witten_bell_counts(context[1:], w)
+            else:
+                count_context = sum(self.nexttoken1[context].values())
+                if count_context == 0:
+                    return self.witten_bell_counts(context[1:], w)
+                T = len(self.nexttoken1[context])
+                lambda_ = count_context / (count_context + T)
+                p_continuation = self.witten_bell_counts(context[1:], w)
+                p_ml = self.nexttoken1[context].get(w, 0) / count_context
+                prob += lambda_ * p_ml + (1 - lambda_) * p_continuation
+        elif len(context) == 0:
+            prob = self.sequence_count1.get((w,), 0) / self.tot_tokens
+        
+        self.cache_witten_bell_prob[context,w] = prob
+        return prob
+    
+    def get_witten_bell_prob(self, sentence):
+        log_prob = 0.0
+        for i in range(3, len(sentence)):
+            context = tuple(sentence[i-3:i])
+            w = sentence[i]
+            prob = self.witten_bell_counts(context, w)
+            if(prob == 0):
+                prob = 1e-12
+            log_prob += math.log(prob)
+        return log_prob
+
+
 if __name__ == "__main__":
     # Example usage
     corpus = load_tokenized_jsonl("cache/eng_train_bpe.jsonl")
     print(f"Loaded corpus with {len(corpus)} lines.")
-    lm = LM()
-    lm.train(corpus)
-    lm.predict("Once upon a time")
+
+    for tokenizer in ["bpe","rxt","ws"]:
+        print("Training LM with", tokenizer, "tokenizer...")
+        corpus = load_tokenized_jsonl(f"cache/eng_train_{tokenizer}.jsonl")
+        lm = LM()
+        lm.train(corpus)
+
+        print(f"Evaluating perplexity for {tokenizer} tokenizer with no smoothing")
+        test_corpus = load_tokenized_jsonl(f"cache/eng_test_{tokenizer}.jsonl")
+        total_prob = 0.0
+        count = 0
+        for line in tqdm(test_corpus):
+            no_tokens = len(line)
+            sentence = ["<s>"]*3 + line + ["</s>"]
+            prob = lm.get_prob_no_smoothing(sentence)
+            total_prob += prob
+            count += no_tokens+1
+
+        corpus_perplexity = math.exp(-total_prob / max(count, 1))
+        print(f"Average perplexity for {tokenizer}: {corpus_perplexity:.2f}")
+
+        total_prob = 0.0
+        count = 0   
+        lm.compute_counts_kneser_key()
+        print(f"Evaluating perplexity for {tokenizer} tokenizer with Kneser-Key smoothing")
+        for line in tqdm(test_corpus):
+            no_tokens = len(line)
+            sentence = ["<s>"]*3 + line + ["</s>"]
+            prob = lm.get_prob_kneser_key(sentence)
+            total_prob += prob
+            count += no_tokens+1
+
+        corpus_perplexity = math.exp(-total_prob / max(count, 1))
+        print(f"Average perplexity with Kneser-Key for {tokenizer}: {corpus_perplexity:.2f}")
+
+        total_prob = 0.0
+        count = 0
+        print(f"Evaluating perplexity for {tokenizer} tokenizer with Witten-Bell smoothing")
+        for line in tqdm(test_corpus):
+            no_tokens = len(line)
+            sentence = ["<s>"]*3 + line + ["</s>"]
+            prob = lm.get_witten_bell_prob(sentence)
+            total_prob += prob
+            count += no_tokens+1
+
+        corpus_perplexity = math.exp(-total_prob / max(count, 1))
+        print(f"Average perplexity with Witten-Bell for {tokenizer}: {corpus_perplexity:.2f}")
+
 
 
 

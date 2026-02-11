@@ -68,8 +68,78 @@ def whitespace_tokenizer(lines):
     return tokens
 
 
+class RegexTokenizer:
+    """
+    Regex-based tokenizer: extracts tokens via a single compiled regex (left-to-right).
+    """
+    def __init__(self):
+        # "Letters" approximation without external regex engine:
+        # [^\W\d_]+  == word chars excluding digits and underscore (good Unicode coverage)
+        word = r"[^\W\d_]+(?:[’'][^\W\d_]+)*"  # allow internal apostrophes: don't, I'm
+        email = r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
+        url = r"(?:https?://|www\.)\S+"
+        number = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+        # Fallback: any single non-whitespace character (punctuation/symbol)
+        other = r"[^\s]"
+
+        self._token_re = re.compile(
+            f"({url}|{email}|{number}|{word}|{other})",
+            flags=re.UNICODE,
+        )
+
+        # Detokenization heuristics (simple + deterministic)
+        self._no_space_before = {
+            ".", ",", "!", "?", ":", ";", "%", ")", "]", "}", "»", "”", "’", "'", '"', "…"
+        }
+        self._no_space_after = {"(", "[", "{", "«", "“", '"'}
+
+        # Common currency signs to glue to following number/token
+        self._prefix_glue = {"$", "£", "€", "¥"}
+
+    def encode_line(self, line: str):
+        return self._token_re.findall(line)
+
+    def tokenize_lines(self, lines):
+        return [self.encode_line(line) for line in lines]
+
+    def detokenize(self, tokens):
+        if not tokens:
+            return ""
+
+        out = []
+        for i, tok in enumerate(tokens):
+            if i == 0:
+                out.append(tok)
+                continue
+
+            prev = tokens[i - 1]
+            # default: insert a space
+            need_space = True
+
+            # never space after openers
+            if prev in self._no_space_after:
+                need_space = False
+
+            # never space before closers/punct
+            if tok in self._no_space_before:
+                need_space = False
+
+            # glue currency to the right: "$ 63" -> "$63"
+            if prev in self._prefix_glue:
+                need_space = False
+
+            # glue apostrophe tokens if they appear as standalone (rare with this regex, but safe)
+            if tok in {"'", "’"} or prev in {"'", "’"}:
+                need_space = False
+
+            out.append((" " if need_space else "") + tok)
+
+        return "".join(out)
+
+
 def regex_tokenizer(lines):
-    pass
+    """Backward-compatible helper: returns list[list[str]] for input lines."""
+    return RegexTokenizer().tokenize_lines(lines)
 
 class BPETokenizer:
     def __init__(self, merge_operations, end_of_word="</w>", min_pair_freq=2):
@@ -221,7 +291,6 @@ class BPETokenizer:
     
     @staticmethod
     def _merge_symbols_once(symbols, pair):
-        """Merge all occurrences of `pair` in `symbols` in a single pass."""
         a, b = pair
         merged = []
         i = 0
@@ -266,3 +335,26 @@ if __name__ == "__main__":
                 lines_bpe = [bpe_tokenizer.encode_line(line) for line in tqdm(lines)]
                 save_tokenized_jsonl(tok_path, lines_bpe)
 
+    ws = whitespace_tokenizer()
+    for lang in ["eng","mn"]:
+        for s in ["train","val","test"]:
+            print(f"Tokenizing {lang} {s} set with whitespace tokenizer...")
+            tok_path = f"cache/{lang}_{s}_ws.jsonl"
+            lines = eval(f"{lang}_{s}")
+            if os.path.exists(tok_path):
+                lines_ws = load_tokenized_jsonl(tok_path)
+            else:
+                lines_ws = [ws.encode_line(line) for line in tqdm(lines)]
+                save_tokenized_jsonl(tok_path, lines_ws)
+
+    rt = RegexTokenizer()
+    for lang in ["eng","mn"]:
+        for s in ["train","val","test"]:
+            print(f"Tokenizing {lang} {s} set with regex tokenizer...")
+            tok_path = f"cache/{lang}_{s}_re.jsonl"
+            lines = eval(f"{lang}_{s}")
+            if os.path.exists(tok_path):
+                lines_re = load_tokenized_jsonl(tok_path)
+            else:
+                lines_re = [rt.encode_line(line) for line in tqdm(lines)]
+                save_tokenized_jsonl(tok_path, lines_re)
